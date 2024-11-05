@@ -1,3 +1,6 @@
 server: main.cpp
 	- mkdir -p bin
-	- g++ main.cpp -o bin/server
+	- g++ -std=c++11 main.cpp -o bin/server
+
+clean:
+	- rm -rf bin
