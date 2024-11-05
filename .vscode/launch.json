@@ -1,0 +1,42 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    // {
+    //   "name": "C/C++: clang build and debug active file",
+    //   "type": "cppdbg",
+    //   "request": "launch",
+    //   "program": "${fileDirname}/${fileBasenameNoExtension}",
+    //   "args": [],
+    //   "stopAtEntry": false,
+    //   "cwd": "${fileDirname}",
+    //   "environment": [],
+    //   "externalConsole": false,
+    //   "MIMode": "lldb",
+    //   "preLaunchTask": "C/C++: clang build active file"
+    // },
+    {
+      "name": "Debug Server",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/server.out",  // Path to the executable
+      "args": [],  // Add any necessary arguments here
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,  // Set to true if you want an external console
+      "MIMode": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ],
+      "preLaunchTask": "build server",  // Ensure the program builds before debugging
+      "miDebuggerPath": "/usr/bin/gdb", // Path to gdb
+      "logging": {
+          "engineLogging": true
+      }
+  }
+  ]
+}

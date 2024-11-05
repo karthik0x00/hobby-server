@@ -67,7 +67,7 @@ class Server {
         continue;
       }
 
-      std::cout << "Incoming connection from " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
+      // std::cout << "Incoming connection from " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
 
       // Launch a new thread for each client connection
       std::thread(&Server::handleClient, this, client_socket, client_addr).detach();
@@ -86,12 +86,12 @@ class Server {
       if (bytes_read == buffer.size()) {
         buffer.resize(buffer.size() * 2);  // Double the buffer size
       } else {
-        write(STDOUT_FILENO, buffer.data(), bytes_read);
+        // write(STDOUT_FILENO, buffer.data(), bytes_read);
         write(client_socket, buffer.data(), bytes_read);
       }
     }
     close(client_socket);
-    std::cout << "Connection terminated with " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
+    // std::cout << "Connection terminated with " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
   }
 
   void closeSocket() {
@@ -102,7 +102,7 @@ class Server {
 };
 
 int main() {
-  Server server("127.0.0.1", 9001);
+  Server server("0.0.0.0", 9001);
 
   if (!server.listen()) {
     return EXIT_FAILURE;
