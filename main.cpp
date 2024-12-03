@@ -1,114 +1,173 @@
 #include <iostream>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <sys/epoll.h>
 #include <unistd.h>
-#include <cstring>
-#include <thread>
+#include <fcntl.h>
 #include <vector>
+#include <memory>
+#include <unordered_map>
+#include <cstring>
+#include <arpa/inet.h>
 
-class Server {
-  public:
-  Server(const std::string& host, int port) : host(host), port(port), server_socket(-1) {}
+const int MAX_EVENTS = 1000;
+const int BUFFER_SIZE = 4096;
+const int MAX_CONNECTIONS = 10000;
 
-  ~Server() {
-    closeSocket();
-  }
+struct Connection {
+  int fd;
+  char readBuffer[BUFFER_SIZE];
+  char writeBuffer[BUFFER_SIZE];
+  ssize_t writeOffset = 0;
+  ssize_t readOffset = 0;
+  bool writePending = false;
 
-  bool listen(int backlog = 3) {
-    // Create socket
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket < 0) {
-      std::cerr << "Socket creation failed: " << strerror(errno) << std::endl;
-      return false;
-    }
-
-    // Set socket options
-    int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-      std::cerr << "Failed to set socket options: " << strerror(errno) << std::endl;
-      close(server_socket);
-      return false;
-    }
-
-    // Configure server address
-    sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    server_addr.sin_addr.s_addr = inet_addr(host.c_str());
-
-    // Bind the socket
-    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-      std::cerr << "Bind failed: " << strerror(errno) << std::endl;
-      close(server_socket);
-      return false;
-    }
-
-    // Start listening
-    if (::listen(server_socket, backlog) < 0) {
-      std::cerr << "Listen failed: " << strerror(errno) << std::endl;
-      close(server_socket);
-      return false;
-    }
-
-    std::cout << "Serving on " << host << ':' << port << std::endl;
-    return true;
-  }
-
-  void acceptConnections() {
-    while (true) {
-      sockaddr_in client_addr;
-      socklen_t addr_len = sizeof(client_addr);
-
-      // Accept a new client connection
-      int client_socket = accept(server_socket, (struct sockaddr*) &client_addr, &addr_len);
-      if (client_socket < 0) {
-        std::cerr << "Accept failed: " << strerror(errno) << std::endl;
-        continue;
-      }
-
-      // std::cout << "Incoming connection from " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
-
-      // Launch a new thread for each client connection
-      std::thread(&Server::handleClient, this, client_socket, client_addr).detach();
-    }
-  }
-
-  private:
-  std::string host;
-  int port;
-  int server_socket;
-
-  void handleClient(int client_socket, sockaddr_in client_addr) {
-    std::vector<char> buffer(1024);
-    ssize_t bytes_read;
-    while ((bytes_read = read(client_socket, buffer.data(), buffer.size())) > 0) {
-      if (bytes_read == buffer.size()) {
-        buffer.resize(buffer.size() * 2);  // Double the buffer size
-      } else {
-        // write(STDOUT_FILENO, buffer.data(), bytes_read);
-        write(client_socket, buffer.data(), bytes_read);
-      }
-    }
-    close(client_socket);
-    // std::cout << "Connection terminated with " << inet_ntoa(client_addr.sin_addr) << ':' << ntohs(client_addr.sin_port) << std::endl;
-  }
-
-  void closeSocket() {
-    if (server_socket >= 0) {
-      close(server_socket);
-    }
-  }
+  Connection(int fd) : fd(fd) {}
 };
 
-int main() {
-  Server server("0.0.0.0", 9001);
+// Utility function to set a socket to non-blocking mode
+void setNonBlocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
 
-  if (!server.listen()) {
-    return EXIT_FAILURE;
+class EchoServer {
+  public:
+  EchoServer(int port);
+  void run();
+
+  private:
+  int server_fd;
+  int epoll_fd;
+  std::unordered_map<int, std::unique_ptr<Connection>> connections;
+
+  void acceptConnection();
+  void handleRead(Connection& conn);
+  void handleWrite(Connection& conn);
+  void closeConnection(int fd);
+};
+
+EchoServer::EchoServer(int port) {
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    perror("Socket creation failed");
+  }
+  int opt = 1;
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+    perror("Set socket options failed");
+  }
+  setNonBlocking(server_fd);
+
+  sockaddr_in server_addr{};
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+  server_addr.sin_port = htons(port);
+
+  if (bind(server_fd, (struct sockaddr*) &server_addr, sizeof(server_addr)) < 0) {
+    perror("Bind failed");
   }
 
-  // Accept connections in the main thread
-  server.acceptConnections();
-  return EXIT_SUCCESS;
+  if (listen(server_fd, 3) < 0) {
+    perror("Listen failed");
+  }
+
+  std::cout << "Server listening on port " << port << std::endl;
+
+  // bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr));
+  // listen(server_fd, SOMAXCONN);
+
+  epoll_fd = epoll_create1(0);
+  epoll_event ev{};
+  ev.events = EPOLLIN;
+  ev.data.fd = server_fd;
+  epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server_fd, &ev);
+}
+
+void EchoServer::run() {
+  epoll_event events[MAX_EVENTS];
+
+  while (true) {
+    int n = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
+
+    for (int i = 0; i < n; ++i) {
+      int fd = events[i].data.fd;
+
+      if (fd == server_fd) {
+        acceptConnection();
+      } else {
+        auto& conn = *connections[fd];
+
+        if (events[i].events & EPOLLIN) {
+          handleRead(conn);
+        }
+        if (events[i].events & EPOLLOUT) {
+          handleWrite(conn);
+        }
+      }
+    }
+  }
+}
+
+void EchoServer::acceptConnection() {
+  sockaddr_in client_addr;
+  socklen_t client_len = sizeof(client_addr);
+  int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
+
+  if (client_fd >= 0) {
+    setNonBlocking(client_fd);
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = client_fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+
+    connections[client_fd] = std::make_unique<Connection>(client_fd);
+  }
+}
+
+void EchoServer::handleRead(Connection& conn) {
+  ssize_t bytesRead = read(conn.fd, conn.readBuffer, BUFFER_SIZE);
+  if (bytesRead > 0) {
+    // Store data in write buffer to echo back
+    std::memcpy(conn.writeBuffer, conn.readBuffer, bytesRead);
+    conn.writeOffset = bytesRead;
+    conn.writePending = true;
+
+    // Register socket for writing
+    epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    ev.data.fd = conn.fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn.fd, &ev);
+  } else if (bytesRead == 0 || (bytesRead == -1 && errno != EAGAIN)) {
+    closeConnection(conn.fd);
+  }
+}
+
+void EchoServer::handleWrite(Connection& conn) {
+  if (conn.writePending) {
+    ssize_t bytesWritten = write(conn.fd, conn.writeBuffer, conn.writeOffset);
+    if (bytesWritten > 0) {
+      conn.writeOffset -= bytesWritten;
+
+      // If all data written, unregister EPOLLOUT
+      if (conn.writeOffset == 0) {
+        conn.writePending = false;
+        epoll_event ev{};
+        ev.events = EPOLLIN | EPOLLET;
+        ev.data.fd = conn.fd;
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn.fd, &ev);
+      }
+    } else if (bytesWritten == -1 && errno != EAGAIN) {
+      closeConnection(conn.fd);
+    }
+  }
+}
+
+void EchoServer::closeConnection(int fd) {
+  epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+  close(fd);
+  connections.erase(fd);
+}
+
+int main() {
+  EchoServer server(9001);
+  server.run();
+  return 0;
 }
